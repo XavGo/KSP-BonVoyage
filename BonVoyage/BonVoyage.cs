@@ -108,7 +108,7 @@ namespace BonVoyage
 			labelStyle.alignment = TextAnchor.MiddleCenter;
 			labelStyle.fontSize = Screen.height / 20;
 			labelStyle.fontStyle = FontStyle.Bold;
-			labelStyle.normal.textColor = Color.red;
+			labelStyle.normal.textColor = Palette.red;
 
 //			mapMarker = GameDatabase.Instance.GetTexture("BonVoyage/Textures/map-marker", false);
 		}
@@ -249,15 +249,27 @@ namespace BonVoyage
 			if (gamePaused)
 				return;
 
-			if (lastUpdated.AddSeconds(1) > DateTime.Now)
+			if (lastUpdated.AddMilliseconds(200) > DateTime.Now)
 				return;
 
 			lastUpdated = DateTime.Now;
 
 			double currentTime = Planetarium.GetUniversalTime();
 			
-			for (int i = 0; i < activeRovers.Count; i++)
-				activeRovers [i].Update (currentTime);
+			for (int i = 0; i < activeRovers.Count; ++i)
+			{
+				ConfigNode vesselConfigNode = new ConfigNode();
+				activeRovers[i].vessel.protoVessel.Save(vesselConfigNode);
+				ConfigNode BVModule = new ConfigNode();
+				foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+				{
+					BVModule = part.GetNode("MODULE", "name", "BonVoyageModule");
+					if (BVModule != null)
+						break;
+				}
+
+				activeRovers[i].Update(currentTime, BVModule, vesselConfigNode);
+			}
 		}
 
 		/// <summary>
@@ -384,18 +396,24 @@ namespace BonVoyage
 			for (int i = 0; i < activeRovers.Count; i++) {
 				var rover = activeRovers [i];
 				switch (rover.status) {
-				case "current":
-					GUI.contentColor = Color.white;
-					break;
-				case "roving":
-					GUI.contentColor = Palette.green;
-					break;
-				case "idle":
-					GUI.contentColor = Palette.yellow;
-					break;
-				case "awaiting sunlight":
-					GUI.contentColor = Palette.red;
-					break;
+					case "current":
+						GUI.contentColor = Palette.white;
+						break;
+					case "roving":
+						GUI.contentColor = Palette.green;
+						break;
+					case "idle":
+						GUI.contentColor = Palette.yellow;
+						break;
+					case "awaiting sunlight":
+						GUI.contentColor = Palette.red;
+						break;
+					case "fuel cells resource depleted":
+						GUI.contentColor = Palette.red;
+						break;
+					case "not enough power":
+						GUI.contentColor = Palette.red;
+						break;
 				}
 				GUILayout.BeginHorizontal ();
 				if (Layout.Button (rover.vessel.vesselName, GUILayout.Width(200))) {
@@ -420,7 +438,7 @@ namespace BonVoyage
 				Layout.Label (rover.vessel.mainBody.bodyName, GUILayout.Width(75));
 				Layout.Label (rover.status, GUILayout.Width (125));
 
-				if (rover.status == "roving" || rover.status == "awaiting sunlight") {
+				if (rover.status == "roving" || rover.status == "awaiting sunlight" || rover.status == "fuel cells resource depleted" || rover.status == "not enough power") {
 					Layout.Label (
 						"v̅ = " + rover.AverageSpeed.ToString ("N") + ", yet to travel " +
 						rover.yetToTravel.ToString ("N0") + " meters"
@@ -442,7 +460,7 @@ namespace BonVoyage
 				GUILayout.EndHorizontal ();
 			}
 			GUILayout.EndScrollView();
-			GUI.contentColor = Color.white;
+			GUI.contentColor = Palette.white;
 			autoDewarp = Layout.Toggle(autoDewarp, "Automagic Dewarp");
 //			useKSPSkin = Layout.Toggle (useKSPSkin, "Use KSP Skin");
 			GUILayout.BeginHorizontal ();
@@ -499,10 +517,10 @@ namespace BonVoyage
 			Layout.LabelAndText ("Distance to target", currentModule.distanceToTarget.ToString("N0"));
 			Layout.LabelAndText ("Distance travelled", currentModule.distanceTravelled.ToString("N0"));
 			Layout.LabelAndText ("Average speed", currentModule.averageSpeed.ToString("F"));
-			Layout.LabelAndText ("Solar power", currentModule.solarPower.ToString("F"));
-			Layout.LabelAndText ("Other power", currentModule.otherPower.ToString("F"));
+			Layout.LabelAndText ("Solar power", currentModule.solarProd.ToString("F"));
+			Layout.LabelAndText ("Other power", currentModule.otherProd.ToString("F"));
+			Layout.LabelAndText ("Fuel cell power", currentModule.fuelCellProd.ToString("F"));
 			Layout.LabelAndText ("Power required", currentModule.powerRequired.ToString("F"));
-			Layout.LabelAndText ("Solar powered", currentModule.solarPowered.ToString ());
 			Layout.LabelAndText ("Is manned", currentModule.isManned.ToString ());
 
 //			Layout.TextField ("lat");

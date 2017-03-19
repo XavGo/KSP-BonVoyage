@@ -24,7 +24,10 @@ namespace BonVoyage
 		private double distanceToTarget;
 		public double yetToTravel { get { return distanceToTarget - distanceTravelled; } }
 
-		private bool solarPowered;
+		private double solarPower;
+		private double fuelCellPower;
+		private double otherPower;
+		private double requiredPower;
 		public bool bvActive;
 		private bool isManned;
 		private ConfigNode BVModule;
@@ -51,7 +54,10 @@ namespace BonVoyage
 				isManned = true;
 			}
 
-			solarPowered = bool.Parse (BVModule.GetValue ("solarPowered"));
+			solarPower = Convert.ToDouble(BVModule.GetValue ("solarProd"));
+			fuelCellPower = Convert.ToDouble(BVModule.GetValue("fuelCellProd"));
+			otherPower = Convert.ToDouble(BVModule.GetValue("otherProd"));
+			requiredPower = Convert.ToDouble(BVModule.GetValue("powerRequired"));
 
 			lastTime = double.Parse (BVModule.GetValue ("lastTime"));
 			distanceTravelled = double.Parse (BVModule.GetValue ("distanceTravelled"));
@@ -68,7 +74,9 @@ namespace BonVoyage
 		/// Update rover.
 		/// </summary>
 		/// <param name="currentTime">Current time.</param>
-		public void Update(double currentTime) {
+		/// <param name="module">BVModule.</param>
+		/// <param name="vcf">Vessel Config Node.</param>
+		public void Update(double currentTime, ConfigNode module, ConfigNode vcf) {
 			if (vessel.isActiveVessel)
 			{
 				status = "current";
@@ -84,7 +92,8 @@ namespace BonVoyage
 			Vector3d vesselPos = vessel.mainBody.position - vessel.GetWorldPos3D();
 			Vector3d toKerbol = vessel.mainBody.position - FlightGlobals.Bodies[0].position;
 			double angle = Vector3d.Angle(vesselPos, toKerbol);
-
+			vesselConfigNode = vcf;
+			BVModule = module;
 			// Speed penalties at twighlight and at night
 			if (angle > 90 && isManned)
 				speedMultiplier = 0.25;
@@ -95,8 +104,21 @@ namespace BonVoyage
 			else
 				speedMultiplier = 1.0;
 
-			// No moving at night, or when there's not enougth solar light for solar powered rovers
-			if (angle > 90 && solarPowered)
+			double deltaT = currentTime - lastTime;
+			double deltaEC = deltaT * requiredPower;
+
+			// max power
+			if (solarPower + fuelCellPower + otherPower < requiredPower || !enoughEC(deltaEC))
+			{
+				status = "not enough power";
+				lastTime = currentTime;
+				BVModule.SetValue("lastTime", currentTime.ToString());
+				vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+				return;
+			}
+
+			// At night, don't move if other OR otherANDfuelcellnotdepleted can't provide enough power
+			if (angle > 90 && !(otherPower>requiredPower || (otherPower+fuelCellPower>requiredPower && !fuelDepleted()) ) )
 			{
 				status = "awaiting sunlight";
 				lastTime = currentTime;
@@ -105,8 +127,17 @@ namespace BonVoyage
 				return;
 			}
 
-			double deltaT = currentTime - lastTime;
+			// At day, don't move if other OR otherANDsolar ...
+			if (angle <= 90 && !(otherPower > requiredPower || (otherPower + solarPower > requiredPower) || !fuelDepleted()) )
+			{
+				status = "fuel cells resource depleted";
+				lastTime = currentTime;
+				BVModule.SetValue("lastTime", currentTime.ToString());
+				vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+				return;
+			}
 
+			ECdrain(deltaEC);
 			double deltaS = AverageSpeed * deltaT;
 			double bearing = GeoUtils.InitialBearing(
 				vessel.latitude,
@@ -194,6 +225,80 @@ namespace BonVoyage
 			BVModule.SetValue("distanceTravelled", (distanceTravelled).ToString());
 			BVModule.SetValue("lastTime", currentTime.ToString());
 			vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+		}
+
+		/// <summary>
+		/// Test if hydrogen or oxygen tank are empty.
+		/// </summary>
+		public bool fuelDepleted()
+		{
+			bool hydrogenDepleted = true;
+			bool oxygenDepleted = true;
+
+			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			{
+				ConfigNode hydrogenNode = part.GetNode("RESOURCE", "name", "Hydrogen");
+				if (hydrogenNode != null && Convert.ToDouble(hydrogenNode.GetValue("amount")) > 0.0)
+					hydrogenDepleted = false;
+
+				ConfigNode oxygenNode = part.GetNode("RESOURCE", "name", "Oxygen");
+				if (oxygenNode != null && Convert.ToDouble(oxygenNode.GetValue("amount")) > 0.0)
+					oxygenDepleted = false;
+			}
+
+			return (hydrogenDepleted || oxygenDepleted);
+		}
+
+		/// <summary>
+		/// Test if EC > 50% and if ecToDrain smaller than ecAmount
+		/// </summary>
+		public bool enoughEC(double ecToDrain)
+		{
+			double ecAmount = 0.0;
+			double ecMaxAmount = 0.0;
+
+			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			{
+				ConfigNode ecNode = part.GetNode("RESOURCE", "name", "ElectricCharge");
+				if (ecNode != null)
+				{
+					ecAmount += Convert.ToDouble(ecNode.GetValue("amount"));
+					ecMaxAmount += Convert.ToDouble(ecNode.GetValue("maxAmount"));
+				}
+			}
+
+			//return ( (ecAmount > (ecMaxAmount/2.0)) && ( (ecAmount-ecToDrain) > (0.35*ecMaxAmount) ) );
+			return ( ecAmount > ecMaxAmount/2.0 && ecToDrain < 0.35 * ecMaxAmount );
+		}
+
+		/// <summary>
+		/// Drain EC, returns true if all EC asked has been drained
+		/// </summary>
+		public bool ECdrain(double ecToDrain)
+		{
+			double ecRemainder = ecToDrain;
+
+			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			{
+				ConfigNode ecNode = part.GetNode("RESOURCE", "name", "ElectricCharge");
+				if (ecNode != null)
+				{
+					double ecAmount = Convert.ToDouble(ecNode.GetValue("amount"));
+					if (ecAmount >= ecRemainder)
+					{
+						ecNode.SetValue("amount", ecAmount - ecToDrain);
+						ecRemainder = 0.0;
+						break;
+					}
+					else
+					{
+						ecNode.SetValue("amount", 0.0);
+						ecRemainder = ecToDrain - ecAmount; 
+					}
+				}
+			}
+
+			return (ecRemainder == 0.0);
 		}
 
 		/// <summary>
