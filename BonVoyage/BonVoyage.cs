@@ -30,6 +30,7 @@ namespace BonVoyage
 		private bool autoDewarp;
 		public bool AutoDewarp { get { return autoDewarp; } }
 		private bool useKSPSkin;
+		private bool kerbalismLoaded = false;
 
 		// Input locking stuff
 		private ControlTypes lockMask = (
@@ -128,6 +129,15 @@ namespace BonVoyage
 			GameEvents.onGamePause.Add(onGamePause);
 			GameEvents.onGameUnpause.Add(onGameUnpause);
 			LoadRovers();
+
+			foreach (var loadedassembly in AssemblyLoader.loadedAssemblies)
+			{
+				if (loadedassembly.name == "Kerbalism")
+				{
+					kerbalismLoaded = true;
+					break;
+				}
+			}
 		}
 
 		/// <summary>
@@ -253,28 +263,45 @@ namespace BonVoyage
 			if (gamePaused)
 				return;
 
-			if (lastUpdated.AddMilliseconds(200) > DateTime.Now)
-				return;
+			if (kerbalismLoaded)
+			{
+				if (lastUpdated.AddMilliseconds(200) > DateTime.Now)
+					return;
+			}
+			else
+			{
+				if (lastUpdated.AddMilliseconds(1000) > DateTime.Now)
+					return;
+			}
 
 			lastUpdated = DateTime.Now;
 
 			double currentTime = Planetarium.GetUniversalTime();
 
-			for (int i = 0; i < activeRovers.Count; ++i)
+			if (kerbalismLoaded)
 			{
-				ConfigNode vesselConfigNode = new ConfigNode();
-				activeRovers[i].vessel.protoVessel.Save(vesselConfigNode);
-				ConfigNode BVModule = new ConfigNode();
-				var partList = vesselConfigNode.GetNodes("PART");
-
-				for (int j = 0; j < partList.Length; j++)
+				for (int i = 0; i < activeRovers.Count; ++i)
 				{
-					BVModule = partList[j].GetNode("MODULE", "name", "BonVoyageModule");
-					if (BVModule != null)
-						break;
-				}
+					ConfigNode vesselConfigNode = new ConfigNode();
+					activeRovers[i].vessel.protoVessel.Save(vesselConfigNode);
+					ConfigNode BVModule = new ConfigNode();
+					var partList = vesselConfigNode.GetNodes("PART");
 
-				activeRovers[i].Update(currentTime, BVModule, vesselConfigNode);
+					for (int j = 0; j < partList.Length; j++)
+					{
+						BVModule = partList[j].GetNode("MODULE", "name", "BonVoyageModule");
+						if (BVModule != null)
+							break;
+					}
+					activeRovers[i].Update(currentTime, BVModule, vesselConfigNode);
+				}
+			}
+			else
+			{
+				for (int i = 0; i < activeRovers.Count; ++i)
+				{
+					activeRovers[i].Update(currentTime);
+				}
 			}
 		}
 

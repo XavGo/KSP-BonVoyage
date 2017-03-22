@@ -82,13 +82,14 @@ namespace BonVoyage
 		}
 
 		/// <summary>
-		/// Update rover.
+		/// Update rover. Actually updating. When Kerbalism is loaded.
 		/// </summary>
 		/// <param name="currentTime">Current time.</param>
 		/// <param name="module">BVModule.</param>
 		/// <param name="vcf">Vessel Config Node.</param>
 		public void Update(double currentTime, ConfigNode module, ConfigNode vcf)
 		{
+			// have to be called if kerbalismFuelCell only
 			if (vessel.isActiveVessel)
 			{
 				status = "current";
@@ -118,9 +119,164 @@ namespace BonVoyage
 
 			double deltaT = currentTime - lastTime;
 			double deltaEC = 0.0;
-			if (kerbalismFuelCell)
-				deltaEC = deltaT * requiredPower;
-			else if (angle > 90 && requiredPower > otherPower)
+			//if (kerbalismFuelCell)
+			deltaEC = deltaT * requiredPower;
+			//else if (angle > 90 && requiredPower > otherPower)
+			//	deltaEC = deltaT * (requiredPower - otherPower);
+			//else if (requiredPower > otherPower + solarPower)
+			//	deltaEC = deltaT * (requiredPower - otherPower - solarPower);
+
+			// max power
+			if (solarPower + fuelCellPower + otherPower < requiredPower || !EnoughEC(deltaEC))
+			{
+				status = "not enough power";
+				lastTime = currentTime;
+				BVModule.SetValue("lastTime", currentTime.ToString());
+				vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+				return;
+			}
+
+			// At night, don't move if other OR otherANDfuelcellnotdepleted can't provide enough power
+			if (angle > 90 && !(otherPower > requiredPower || (otherPower + fuelCellPower > requiredPower && !FuelDepleted())))
+			{
+				status = "awaiting sunlight";
+				lastTime = currentTime;
+				BVModule.SetValue("lastTime", currentTime.ToString());
+				vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+				return;
+			}
+
+			// At day, don't move if other OR otherANDsolar ...
+			if (angle <= 90 && !(otherPower > requiredPower || (otherPower + solarPower > requiredPower) || !FuelDepleted()))
+			{
+				status = "fuel cells resource depleted";
+				lastTime = currentTime;
+				BVModule.SetValue("lastTime", currentTime.ToString());
+				vessel.protoVessel = new ProtoVessel(vesselConfigNode, HighLogic.CurrentGame);
+				return;
+			}
+
+			ECdrain(deltaEC);
+
+			double deltaS = AverageSpeed * deltaT;
+			double bearing = GeoUtils.InitialBearing(
+				vessel.latitude,
+				vessel.longitude,
+				targetLatitude,
+				targetLongitude
+			);
+			distanceTravelled += deltaS;
+			if (distanceTravelled >= distanceToTarget)
+			{
+				// vessel.latitude = targetLatitude;
+				// vessel.longitude = targetLongitude;
+				if (!MoveSafe(targetLatitude, targetLongitude))
+					distanceTravelled -= deltaS;
+				else
+				{
+					distanceTravelled = distanceToTarget;
+
+					bvActive = false;
+					BVModule.SetValue("isActive", "False");
+					BVModule.SetValue("distanceTravelled", distanceToTarget.ToString());
+					BVModule.SetValue("pathEncoded", "");
+
+					//LqdFuelOxiDrain(stockFuelCellECMax - stockFuelCellECRemain);
+
+					// BVModule.GetNode ("EVENTS").GetNode ("Activate").SetValue ("active", "True");
+					// BVModule.GetNode ("EVENTS").GetNode ("Deactivate").SetValue ("active", "False");
+
+					if (BonVoyage.Instance.AutoDewarp)
+					{
+						if (TimeWarp.CurrentRate > 3)
+							TimeWarp.SetRate(3, true);
+						if (TimeWarp.CurrentRate > 0)
+							TimeWarp.SetRate(0, false);
+						ScreenMessages.PostScreenMessage(vessel.vesselName + " has arrived to destination at " + vessel.mainBody.name);
+					}
+					HoneyImHome();
+				}
+				status = "idle";
+			}
+			else
+			{
+				int step = Convert.ToInt32(Math.Floor(distanceTravelled / PathFinder.StepSize));
+				double remainder = distanceTravelled % PathFinder.StepSize;
+
+				if (step < path.Count - 1)
+					bearing = GeoUtils.InitialBearing(
+						path[step].latitude,
+						path[step].longitude,
+						path[step + 1].latitude,
+						path[step + 1].longitude
+					);
+				else
+					bearing = GeoUtils.InitialBearing(
+						path[step].latitude,
+						path[step].longitude,
+						targetLatitude,
+						targetLongitude
+					);
+
+				double[] newCoordinates = GeoUtils.GetLatitudeLongitude(
+					path[step].latitude,
+					path[step].longitude,
+					bearing,
+					remainder,
+					vessel.mainBody.Radius
+				);
+
+				// vessel.latitude = newCoordinates[0];
+				// vessel.longitude = newCoordinates[1];
+				if (!MoveSafe(newCoordinates[0], newCoordinates[1]))
+				{
+					distanceTravelled -= deltaS;
+					status = "idle";
+				}
+				else
+					status = "roving";
+			}
+			// vessel.altitude = GeoUtils.TerrainHeightAt(vessel.latitude, vessel.longitude, vessel.mainBody);
+			Save(currentTime);
+		}
+
+
+		/// <summary>
+		/// Update rover. When Kerbalism is not loaded.
+		/// </summary>
+		/// <param name="currentTime">Current time.</param>
+		public void Update(double currentTime)
+		{
+			if (vessel.isActiveVessel)
+			{
+				status = "current";
+				return;
+			}
+
+			if (!bvActive || vessel.loaded)
+			{
+				status = "idle";
+				return;
+			}
+
+			Vector3d vesselPos = vessel.mainBody.position - vessel.GetWorldPos3D();
+			Vector3d toKerbol = vessel.mainBody.position - FlightGlobals.Bodies[0].position;
+			double angle = Vector3d.Angle(vesselPos, toKerbol);
+
+			// Speed penalties at twighlight and at night
+			if (angle > 90 && isManned)
+				speedMultiplier = 0.25;
+			else if (angle > 85 && isManned)
+				speedMultiplier = 0.5;
+			else if (angle > 80 && isManned)
+				speedMultiplier = 0.75;
+			else
+				speedMultiplier = 1.0;
+
+			double deltaT = currentTime - lastTime;
+			double deltaEC = 0.0;
+
+			if (angle > 90 && requiredPower > otherPower)
 				deltaEC = deltaT * (requiredPower - otherPower);
 			else if (requiredPower > otherPower + solarPower)
 				deltaEC = deltaT * (requiredPower - otherPower - solarPower);
