@@ -5,7 +5,8 @@ using KSP.UI.Screens;
 
 namespace BonVoyage
 {
-	public class ActiveRover {
+	public class ActiveRover
+	{
 		public string status;
 		public double toTravel;
 
@@ -28,6 +29,9 @@ namespace BonVoyage
 		private double fuelCellPower;
 		private double otherPower;
 		private double requiredPower;
+		public bool kerbalismFuelCell;
+		public double stockFuelCellECMax;
+		public double stockFuelCellECRemain;
 		public bool bvActive;
 		private bool isManned;
 		private ConfigNode BVModule;
@@ -39,32 +43,39 @@ namespace BonVoyage
 		/// <param name="v">Vessel.</param>
 		/// <param name="module">Bon Voyage Module.</param>
 		/// <param name="vcf">Vessel Config Node.</param>
-		public ActiveRover(Vessel v, ConfigNode module, ConfigNode vcf) {
+		public ActiveRover(Vessel v, ConfigNode module, ConfigNode vcf)
+		{
 			vessel = v;
 			vesselConfigNode = vcf;
 
 			BVModule = module;
 
-			bvActive = bool.Parse (BVModule.GetValue ("isActive"));
+			bvActive = bool.Parse(BVModule.GetValue("isActive"));
 
 			// Workaround for update from versions prior to 1.0
-			try {
-				isManned = bool.Parse (BVModule.GetValue ("isManned"));
-			} catch {
+			try
+			{
+				isManned = bool.Parse(BVModule.GetValue("isManned"));
+			}
+			catch
+			{
 				isManned = true;
 			}
 
-			solarPower = Convert.ToDouble(BVModule.GetValue ("solarProd"));
-			fuelCellPower = Convert.ToDouble(BVModule.GetValue("fuelCellProd"));
-			otherPower = Convert.ToDouble(BVModule.GetValue("otherProd"));
-			requiredPower = Convert.ToDouble(BVModule.GetValue("powerRequired"));
+			solarPower = double.Parse(BVModule.GetValue("solarProd"));
+			fuelCellPower = double.Parse(BVModule.GetValue("fuelCellProd"));
+			otherPower = double.Parse(BVModule.GetValue("otherProd"));
+			requiredPower = double.Parse(BVModule.GetValue("powerRequired"));
+			kerbalismFuelCell = bool.Parse(BVModule.GetValue("kerbalismFuelCell"));
+			stockFuelCellECMax = double.Parse(BVModule.GetValue("stockFuelCellECMax"));
+			stockFuelCellECRemain = double.Parse(BVModule.GetValue("stockFuelCellECRemain"));
 
-			lastTime = double.Parse (BVModule.GetValue ("lastTime"));
-			distanceTravelled = double.Parse (BVModule.GetValue ("distanceTravelled"));
-			distanceToTarget = double.Parse (BVModule.GetValue ("distanceToTarget"));
-			targetLatitude = double.Parse (BVModule.GetValue ("targetLatitude"));
-			targetLongitude = double.Parse (BVModule.GetValue ("targetLongitude"));
-			averageSpeed = double.Parse(BVModule.GetValue ("averageSpeed"));
+			lastTime = double.Parse(BVModule.GetValue("lastTime"));
+			distanceTravelled = double.Parse(BVModule.GetValue("distanceTravelled"));
+			distanceToTarget = double.Parse(BVModule.GetValue("distanceToTarget"));
+			targetLatitude = double.Parse(BVModule.GetValue("targetLatitude"));
+			targetLongitude = double.Parse(BVModule.GetValue("targetLongitude"));
+			averageSpeed = double.Parse(BVModule.GetValue("averageSpeed"));
 
 			path = PathUtils.DecodePath(BVModule.GetValue("pathEncoded"));
 			speedMultiplier = 1.0;
@@ -76,7 +87,8 @@ namespace BonVoyage
 		/// <param name="currentTime">Current time.</param>
 		/// <param name="module">BVModule.</param>
 		/// <param name="vcf">Vessel Config Node.</param>
-		public void Update(double currentTime, ConfigNode module, ConfigNode vcf) {
+		public void Update(double currentTime, ConfigNode module, ConfigNode vcf)
+		{
 			if (vessel.isActiveVessel)
 			{
 				status = "current";
@@ -105,10 +117,16 @@ namespace BonVoyage
 				speedMultiplier = 1.0;
 
 			double deltaT = currentTime - lastTime;
-			double deltaEC = deltaT * requiredPower;
+			double deltaEC = 0.0;
+			if (kerbalismFuelCell)
+				deltaEC = deltaT * requiredPower;
+			else if (angle > 90 && requiredPower > otherPower)
+				deltaEC = deltaT * (requiredPower - otherPower);
+			else if (requiredPower > otherPower + solarPower)
+				deltaEC = deltaT * (requiredPower - otherPower - solarPower);
 
 			// max power
-			if (solarPower + fuelCellPower + otherPower < requiredPower || !enoughEC(deltaEC))
+			if (solarPower + fuelCellPower + otherPower < requiredPower || !EnoughEC(deltaEC))
 			{
 				status = "not enough power";
 				lastTime = currentTime;
@@ -118,7 +136,7 @@ namespace BonVoyage
 			}
 
 			// At night, don't move if other OR otherANDfuelcellnotdepleted can't provide enough power
-			if (angle > 90 && !(otherPower>requiredPower || (otherPower+fuelCellPower>requiredPower && !fuelDepleted()) ) )
+			if (angle > 90 && !(otherPower > requiredPower || (otherPower + fuelCellPower > requiredPower && !FuelDepleted())))
 			{
 				status = "awaiting sunlight";
 				lastTime = currentTime;
@@ -128,7 +146,7 @@ namespace BonVoyage
 			}
 
 			// At day, don't move if other OR otherANDsolar ...
-			if (angle <= 90 && !(otherPower > requiredPower || (otherPower + solarPower > requiredPower) || !fuelDepleted()) )
+			if (angle <= 90 && !(otherPower > requiredPower || (otherPower + solarPower > requiredPower) || !FuelDepleted()))
 			{
 				status = "fuel cells resource depleted";
 				lastTime = currentTime;
@@ -138,6 +156,7 @@ namespace BonVoyage
 			}
 
 			ECdrain(deltaEC);
+
 			double deltaS = AverageSpeed * deltaT;
 			double bearing = GeoUtils.InitialBearing(
 				vessel.latitude,
@@ -148,33 +167,38 @@ namespace BonVoyage
 			distanceTravelled += deltaS;
 			if (distanceTravelled >= distanceToTarget)
 			{
-//				vessel.latitude = targetLatitude;
-//				vessel.longitude = targetLongitude;
-				if (!MoveSafe (targetLatitude, targetLongitude))
+				// vessel.latitude = targetLatitude;
+				// vessel.longitude = targetLongitude;
+				if (!MoveSafe(targetLatitude, targetLongitude))
 					distanceTravelled -= deltaS;
-				else {
+				else
+				{
 					distanceTravelled = distanceToTarget;
 
 					bvActive = false;
-					BVModule.SetValue ("isActive", "False");
-					BVModule.SetValue ("distanceTravelled", distanceToTarget.ToString ());
-					BVModule.SetValue ("pathEncoded", "");
+					BVModule.SetValue("isActive", "False");
+					BVModule.SetValue("distanceTravelled", distanceToTarget.ToString());
+					BVModule.SetValue("pathEncoded", "");
 
-//					BVModule.GetNode ("EVENTS").GetNode ("Activate").SetValue ("active", "True");
-//					BVModule.GetNode ("EVENTS").GetNode ("Deactivate").SetValue ("active", "False");
+					LqdFuelOxiDrain(stockFuelCellECMax - stockFuelCellECRemain);
 
-					if (BonVoyage.Instance.AutoDewarp) {
+					// BVModule.GetNode ("EVENTS").GetNode ("Activate").SetValue ("active", "True");
+					// BVModule.GetNode ("EVENTS").GetNode ("Deactivate").SetValue ("active", "False");
+
+					if (BonVoyage.Instance.AutoDewarp)
+					{
 						if (TimeWarp.CurrentRate > 3)
-							TimeWarp.SetRate (3, true);
+							TimeWarp.SetRate(3, true);
 						if (TimeWarp.CurrentRate > 0)
-							TimeWarp.SetRate (0, false);
-						ScreenMessages.PostScreenMessage (vessel.vesselName + " has arrived to destination at " + vessel.mainBody.name);
+							TimeWarp.SetRate(0, false);
+						ScreenMessages.PostScreenMessage(vessel.vesselName + " has arrived to destination at " + vessel.mainBody.name);
 					}
-					HoneyImHome ();
+					HoneyImHome();
 				}
 				status = "idle";
 			}
-			else {
+			else
+			{
 				int step = Convert.ToInt32(Math.Floor(distanceTravelled / PathFinder.StepSize));
 				double remainder = distanceTravelled % PathFinder.StepSize;
 
@@ -201,22 +225,25 @@ namespace BonVoyage
 					vessel.mainBody.Radius
 				);
 
-//				vessel.latitude = newCoordinates[0];
-//				vessel.longitude = newCoordinates[1];
-				if (!MoveSafe (newCoordinates [0], newCoordinates [1])) {
+				// vessel.latitude = newCoordinates[0];
+				// vessel.longitude = newCoordinates[1];
+				if (!MoveSafe(newCoordinates[0], newCoordinates[1]))
+				{
 					distanceTravelled -= deltaS;
 					status = "idle";
-				} else
+				}
+				else
 					status = "roving";
 			}
-//			vessel.altitude = GeoUtils.TerrainHeightAt(vessel.latitude, vessel.longitude, vessel.mainBody);
-			Save (currentTime);
+			// vessel.altitude = GeoUtils.TerrainHeightAt(vessel.latitude, vessel.longitude, vessel.mainBody);
+			Save(currentTime);
 		}
 
 		/// <summary>
 		/// Save data to ProtoVessel.
 		/// </summary>
-		public void Save(double currentTime) {
+		public void Save(double currentTime)
+		{
 			lastTime = currentTime;
 			vesselConfigNode.SetValue("lat", vessel.latitude.ToString());
 			vesselConfigNode.SetValue("lon", vessel.longitude.ToString());
@@ -230,45 +257,67 @@ namespace BonVoyage
 		/// <summary>
 		/// Test if hydrogen or oxygen tank are empty.
 		/// </summary>
-		public bool fuelDepleted()
+		public bool FuelDepleted()
 		{
-			bool hydrogenDepleted = true;
-			bool oxygenDepleted = true;
+			var partList = vesselConfigNode.GetNodes("PART");
 
-			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			if (kerbalismFuelCell)
 			{
-				ConfigNode hydrogenNode = part.GetNode("RESOURCE", "name", "Hydrogen");
-				if (hydrogenNode != null && Convert.ToDouble(hydrogenNode.GetValue("amount")) > 0.0)
-					hydrogenDepleted = false;
+				bool hydrogenDepleted = true;
+				bool oxygenDepleted = true;
 
-				ConfigNode oxygenNode = part.GetNode("RESOURCE", "name", "Oxygen");
-				if (oxygenNode != null && Convert.ToDouble(oxygenNode.GetValue("amount")) > 0.0)
-					oxygenDepleted = false;
+				for (int i = 0; i < partList.Length; i++)
+				{
+					if (hydrogenDepleted)
+					{
+						ConfigNode hydrogenNode = partList[i].GetNode("RESOURCE", "name", "Hydrogen");
+						if (hydrogenNode != null && double.Parse(hydrogenNode.GetValue("amount")) > 0.0)
+						{
+							hydrogenDepleted = false;
+							if (!oxygenDepleted)
+								break;
+						}
+					}
+					if (oxygenDepleted)
+					{
+						ConfigNode oxygenNode = partList[i].GetNode("RESOURCE", "name", "Oxygen");
+						if (oxygenNode != null && double.Parse(oxygenNode.GetValue("amount")) > 0.0)
+						{
+							oxygenDepleted = false;
+							if (!hydrogenDepleted)
+								break;
+						}
+					}
+				}
+
+				return (hydrogenDepleted || oxygenDepleted);
 			}
-
-			return (hydrogenDepleted || oxygenDepleted);
+			else
+				return (stockFuelCellECRemain == 0.0);
 		}
 
 		/// <summary>
 		/// Test if EC > 50% and if ecToDrain smaller than ecAmount
 		/// </summary>
-		public bool enoughEC(double ecToDrain)
+		public bool EnoughEC(double ecToDrain)
 		{
+			if (!kerbalismFuelCell)
+				return true;
+
 			double ecAmount = 0.0;
 			double ecMaxAmount = 0.0;
+			var partList = vesselConfigNode.GetNodes("PART");
 
-			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			for (int i = 0; i < partList.Length; ++i)
 			{
-				ConfigNode ecNode = part.GetNode("RESOURCE", "name", "ElectricCharge");
+				ConfigNode ecNode = partList[i].GetNode("RESOURCE", "name", "ElectricCharge");
 				if (ecNode != null)
 				{
-					ecAmount += Convert.ToDouble(ecNode.GetValue("amount"));
-					ecMaxAmount += Convert.ToDouble(ecNode.GetValue("maxAmount"));
+					ecAmount += double.Parse(ecNode.GetValue("amount"));
+					ecMaxAmount += double.Parse(ecNode.GetValue("maxAmount"));
 				}
 			}
-
-			//return ( (ecAmount > (ecMaxAmount/2.0)) && ( (ecAmount-ecToDrain) > (0.35*ecMaxAmount) ) );
-			return ( ecAmount > ecMaxAmount/2.0 && ecToDrain < 0.35 * ecMaxAmount );
+			return (ecAmount > ecMaxAmount / 2.0 && ecToDrain < 0.2 * ecMaxAmount);
 		}
 
 		/// <summary>
@@ -276,29 +325,101 @@ namespace BonVoyage
 		/// </summary>
 		public bool ECdrain(double ecToDrain)
 		{
-			double ecRemainder = ecToDrain;
-
-			foreach (ConfigNode part in vesselConfigNode.GetNodes("PART"))
+			if (kerbalismFuelCell)
 			{
-				ConfigNode ecNode = part.GetNode("RESOURCE", "name", "ElectricCharge");
-				if (ecNode != null)
+				double ecRemainder = ecToDrain;
+				var partList = vesselConfigNode.GetNodes("PART");
+
+				for (int i = 0; i < partList.Length; i++)
 				{
-					double ecAmount = Convert.ToDouble(ecNode.GetValue("amount"));
-					if (ecAmount >= ecRemainder)
+					ConfigNode ecNode = partList[i].GetNode("RESOURCE", "name", "ElectricCharge");
+					if (ecNode != null)
 					{
-						ecNode.SetValue("amount", ecAmount - ecToDrain);
-						ecRemainder = 0.0;
-						break;
+						double ecAmount = double.Parse(ecNode.GetValue("amount"));
+						if (ecAmount >= ecRemainder)
+						{
+							ecNode.SetValue("amount", ecAmount - ecRemainder);
+							ecRemainder = 0.0;
+							break;
+						}
+						else
+						{
+							ecNode.SetValue("amount", 0.0);
+							ecRemainder -= ecAmount;
+						}
+					}
+				}
+
+				return (ecRemainder == 0.0);
+			}
+			else
+			{
+				if (stockFuelCellECRemain >= ecToDrain)
+				{
+					stockFuelCellECRemain -= ecToDrain;
+					BVModule.SetValue("stockFuelCellECRemain", stockFuelCellECRemain.ToString());
+					return true;
+				}
+				else
+				{
+					stockFuelCellECRemain = 0.0;
+					BVModule.SetValue("stockFuelCellECRemain", stockFuelCellECRemain.ToString());
+					return false;
+				}
+			}
+		}
+
+		/// <summary>
+		/// Drain stock Fuel cell input resources, returns true if all EC asked has been drained
+		/// </summary>
+		public bool LqdFuelOxiDrain(double ecToDrain)
+		{
+			if (kerbalismFuelCell)
+				return true;
+			
+			double lqdFuelRemainder = ecToDrain * 0.001125;
+			double oxiRemainder = ecToDrain * 0.001375;
+			var partList = vesselConfigNode.GetNodes("PART");
+
+			for (int i = 0; i < partList.Length; i++)
+			{
+				ConfigNode lqdFuelNode = partList[i].GetNode("RESOURCE", "name", "LiquidFuel");
+				if (lqdFuelNode != null)
+				{
+					double lqdFuelAmount = double.Parse(lqdFuelNode.GetValue("amount"));
+					if (lqdFuelAmount >= lqdFuelRemainder)
+					{
+						lqdFuelNode.SetValue("amount", lqdFuelAmount - lqdFuelRemainder);
+						lqdFuelRemainder = 0.0;
+						if(oxiRemainder == 0.0)
+							break;
 					}
 					else
 					{
-						ecNode.SetValue("amount", 0.0);
-						ecRemainder = ecToDrain - ecAmount; 
+						lqdFuelNode.SetValue("amount", 0.0);
+						lqdFuelRemainder -= lqdFuelAmount;
+					}
+				}
+
+				ConfigNode oxiNode = partList[i].GetNode("RESOURCE", "name", "Oxidizer");
+				if (oxiNode != null)
+				{
+					double oxiAmount = double.Parse(oxiNode.GetValue("amount"));
+					if (oxiAmount >= oxiRemainder)
+					{
+						oxiNode.SetValue("amount", oxiAmount - oxiRemainder);
+						oxiRemainder = 0.0;
+						if (lqdFuelRemainder == 0.0)
+							break;
+					}
+					else
+					{
+						oxiNode.SetValue("amount", 0.0);
+						oxiRemainder -= oxiAmount;
 					}
 				}
 			}
-
-			return (ecRemainder == 0.0);
+			return (lqdFuelRemainder == 0.0 && oxiRemainder == 0.0);
 		}
 
 		/// <summary>
@@ -307,18 +428,21 @@ namespace BonVoyage
 		/// <returns><c>true</c>, if rover was moved, <c>false</c> otherwise.</returns>
 		/// <param name="latitude">Latitude.</param>
 		/// <param name="longitude">Longitude.</param>
-		private bool MoveSafe(double latitude, double longitude) {
+		private bool MoveSafe(double latitude, double longitude)
+		{
 			double altitude = GeoUtils.TerrainHeightAt(latitude, longitude, vessel.mainBody);
-			if (FlightGlobals.ActiveVessel != null) {
-				Vector3d newPos = vessel.mainBody.GetWorldSurfacePosition (latitude, longitude, altitude);
-				Vector3d actPos = FlightGlobals.ActiveVessel.GetWorldPos3D ();
-				double distance = Vector3d.Distance (newPos, actPos);
-				if (distance <= 2400) {
+			if (FlightGlobals.ActiveVessel != null)
+			{
+				Vector3d newPos = vessel.mainBody.GetWorldSurfacePosition(latitude, longitude, altitude);
+				Vector3d actPos = FlightGlobals.ActiveVessel.GetWorldPos3D();
+				double distance = Vector3d.Distance(newPos, actPos);
+				if (distance <= 2400)
+				{
 					return false;
 				}
-//				VesselRanges ranges = active.vesselRanges.GetSituationRanges(Vessel.Situations.LANDED || Vessel.Situations.FLYING);
-//				vessel.GoOffRails ();
-//				vessel.Load ();
+				// VesselRanges ranges = active.vesselRanges.GetSituationRanges(Vessel.Situations.LANDED || Vessel.Situations.FLYING);
+				// vessel.GoOffRails ();
+				// vessel.Load ();
 			}
 
 			vessel.latitude = latitude;
@@ -330,22 +454,23 @@ namespace BonVoyage
 		/// <summary>
 		/// Notify that rover has arrived
 		/// </summary>
-		private void HoneyImHome() {
-			MessageSystem.Message message = new MessageSystem.Message (
-                "Rover arrived",
+		private void HoneyImHome()
+		{
+			MessageSystem.Message message = new MessageSystem.Message(
+				"Rover arrived",
 				//------------------------------------------
-                "<color=#74B4E2>" + vessel.vesselName + "</color>" +
-                " has arrived to destination\n<color=#AED6EE>LAT:" +
-                targetLatitude.ToString ("F2") + "</color>\n<color=#AED6EE>LON:" +
-                targetLongitude.ToString ("F2") +
-                "</color>\n<color=#82BCE5>At " + vessel.mainBody.name + ".</color>\n" +
-                "Distance travelled: " +
-                "<color=#74B4E2>" + distanceTravelled.ToString ("N") + "</color> meters",
+				"<color=#74B4E2>" + vessel.vesselName + "</color>" +
+				" has arrived to destination\n<color=#AED6EE>LAT:" +
+				targetLatitude.ToString("F2") + "</color>\n<color=#AED6EE>LON:" +
+				targetLongitude.ToString("F2") +
+				"</color>\n<color=#82BCE5>At " + vessel.mainBody.name + ".</color>\n" +
+				"Distance travelled: " +
+				"<color=#74B4E2>" + distanceTravelled.ToString("N") + "</color> meters",
 				//------------------------------------------
-                MessageSystemButton.MessageButtonColor.GREEN,
-                MessageSystemButton.ButtonIcons.COMPLETE
-            );
-			MessageSystem.Instance.AddMessage (message);
+				MessageSystemButton.MessageButtonColor.GREEN,
+				MessageSystemButton.ButtonIcons.COMPLETE
+			);
+			MessageSystem.Instance.AddMessage(message);
 		}
 	}
 }
